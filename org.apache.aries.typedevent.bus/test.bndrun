@@ -19,16 +19,32 @@
 
 -runfw: org.apache.felix.framework
 
+-runrequires: \
+    bnd.identity;id='${project.artifactId}-tests',\
+    bnd.identity;id='junit-jupiter-engine',\
+    bnd.identity;id='junit-platform-launcher'
+
 -resolve.effective: active
+# This will help us keep -runbundles sorted
+-runstartlevel: \
+    order=sortbynameversion,\
+    begin=-1
+
 -runbundles: \
-	ch.qos.logback.classic;version='[1.2.3,1.2.4)',\
-	ch.qos.logback.core;version='[1.2.3,1.2.4)',\
-	org.apache.aries.component-dsl.component-dsl;version='[1.2.2,1.2.3)',\
-	org.apache.aries.typedevent.bus;version='[0.0.1,0.0.2)',\
-	org.apache.felix.configadmin;version='[1.9.18,1.9.19)',\
-	org.apache.felix.converter;version='[1.0.14,1.0.15)',\
-	org.osgi.service.typedevent;version='[1.0.0,1.0.1)',\
-	org.osgi.util.function;version='[1.1.0,1.1.1)',\
-	org.osgi.util.promise;version='[1.1.1,1.1.2)',\
-	org.osgi.util.pushstream;version='[1.0.1,1.0.2)',\
-	slf4j.api;version='[1.7.30,1.7.31)'
+    ch.qos.logback.classic;version='[1.2.3,1.2.4)',\
+    ch.qos.logback.core;version='[1.2.3,1.2.4)',\
+    org.apache.aries.component-dsl.component-dsl;version='[1.2.2,1.2.3)',\
+    org.apache.aries.typedevent.bus;version='[0.0.1,0.0.2)',\
+    org.apache.felix.configadmin;version='[1.9.18,1.9.19)',\
+    org.apache.felix.converter;version='[1.0.14,1.0.15)',\
+    org.osgi.service.typedevent;version='[1.0.0,1.0.1)',\
+    org.osgi.util.function;version='[1.1.0,1.1.1)',\
+    org.osgi.util.pushstream;version='[1.0.1,1.0.2)',\
+    slf4j.api;version='[1.7.30,1.7.31)',\
+    org.osgi.util.promise;version='[1.2.0,1.2.1)',\
+    junit-jupiter-api;version='[5.6.2,5.6.3)',\
+    junit-jupiter-engine;version='[5.6.2,5.6.3)',\
+    junit-platform-commons;version='[1.6.2,1.6.3)',\
+    junit-platform-engine;version='[1.6.2,1.6.3)',\
+    junit-platform-launcher;version='[1.6.2,1.6.3)',\
+    org.opentest4j;version='[1.2.0,1.2.1)'
