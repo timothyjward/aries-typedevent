@@ -32,7 +32,6 @@ import java.util.Map.Entry;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Function;
 import java.util.stream.Stream;
 
 import org.osgi.framework.Constants;
@@ -84,6 +83,18 @@ public class TypedEventBusImpl implements TypedEventBus {
      */
     private final Map<Long, List<String>> knownHandlers = new HashMap<>();
 
+    /**
+     * Map access and mutation must be synchronized on {@link #lock}. Values from
+     * the map should be copied as the contents are not thread safe.
+     */
+    private final Map<Long, TypedEventHandler<?>> knownTypedHandlers = new HashMap<>();
+
+    /**
+     * Map access and mutation must be synchronized on {@link #lock}. Values from
+     * the map should be copied as the contents are not thread safe.
+     */
+    private final Map<Long, UntypedEventHandler> knownUntypedHandlers = new HashMap<>();
+
     private final BlockingQueue<EventTask> queue = new LinkedBlockingQueue<>();
 
     /**
@@ -99,14 +110,19 @@ public class TypedEventBusImpl implements TypedEventBus {
     }
 
     void addTypedEventHandler(TypedEventHandler<?> handler, Map<String, Object> properties) {
-        // TODO try to extract topic name reflectively
-        String defaultTopic = null;
+        Class<?> clazz = discoverTypeForTypedHandler(handler, properties);
+        
+        String defaultTopic = clazz.getName().replace(".", "/");
 
+        doAddEventHandler(topicsToTypedHandlers, knownTypedHandlers, handler, defaultTopic, properties);
+    }
+
+    private Class<?> discoverTypeForTypedHandler(TypedEventHandler<?> handler, Map<String, Object> properties) {
+        Class<?> clazz;
         Object type = properties.get(TypedEventConstants.TYPED_EVENT_TYPE);
         if (type != null) {
-            defaultTopic = String.valueOf(type).replace(".", "/");
             try {
-                Class<?> clazz = handler.getClass().getClassLoader().loadClass(String.valueOf(type));
+                 clazz = handler.getClass().getClassLoader().loadClass(String.valueOf(type));
 
                 synchronized (lock) {
                     typedHandlersToTargetClasses.put(handler, clazz);
@@ -114,32 +130,32 @@ public class TypedEventBusImpl implements TypedEventBus {
             } catch (ClassNotFoundException e) {
                 // TODO Blow up
                 e.printStackTrace();
+                clazz = null;
             }
         } else {
-            Class<?> clazz = Arrays.stream(handler.getClass().getGenericInterfaces())
+           clazz = Arrays.stream(handler.getClass().getGenericInterfaces())
                     .filter(ParameterizedType.class::isInstance).map(ParameterizedType.class::cast)
                     .filter(t -> TypedEventHandler.class.equals(t.getRawType())).map(t -> t.getActualTypeArguments()[0])
                     .findFirst().map(Class.class::cast).orElse(null);
 
-            if (clazz != null) {
-                defaultTopic = String.valueOf(type).replace(".", "/");
-                synchronized (lock) {
-                    typedHandlersToTargetClasses.put(handler, clazz);
-                }
-            } else {
-                // TODO Blow Up
-            }
         }
 
-        doAddEventHandler(topicsToTypedHandlers, handler, defaultTopic, properties);
+        if (clazz != null) {
+            synchronized (lock) {
+                typedHandlersToTargetClasses.put(handler, clazz);
+            }
+        } else {
+            // TODO Blow Up
+        }
+        return clazz;
     }
 
     void addUntypedEventHandler(UntypedEventHandler handler, Map<String, Object> properties) {
-        doAddEventHandler(topicsToUntypedHandlers, handler, null, properties);
+        doAddEventHandler(topicsToUntypedHandlers, knownUntypedHandlers, handler, null, properties);
     }
 
-    private <T> void doAddEventHandler(Map<String, Map<T, Filter>> map, T handler, String defaultTopic,
-            Map<String, Object> properties) {
+    private <T> void doAddEventHandler(Map<String, Map<T, Filter>> map, Map<Long, T> idMap, 
+            T handler, String defaultTopic, Map<String, Object> properties) {
 
         Object prop = properties.get(TypedEventConstants.TYPED_EVENT_TOPICS);
 
@@ -166,17 +182,13 @@ public class TypedEventBusImpl implements TypedEventBus {
             return;
         }
 
-        doAddToMap(map, handler, x -> f, topicList, serviceId);
-    }
-
-    private <T, U> void doAddToMap(Map<String, Map<T, U>> map, T handler, Function<String, U> valueSupplier,
-            List<String> list, Long serviceId) {
         synchronized (lock) {
-            knownHandlers.put(serviceId, list);
-
-            list.forEach(s -> {
-                Map<T, U> handlers = map.computeIfAbsent(s, x -> new HashMap<>());
-                handlers.put(handler, valueSupplier.apply(s));
+            knownHandlers.put(serviceId, topicList);
+            idMap.put(serviceId, handler);
+        
+            topicList.forEach(s -> {
+                Map<T, Filter> handlers = map.computeIfAbsent(s, x1 -> new HashMap<>());
+                handlers.put(handler, f);
             });
         }
     }
@@ -185,7 +197,7 @@ public class TypedEventBusImpl implements TypedEventBus {
 
         Long serviceId = getServiceId(properties);
 
-        doRemoveEventHandler(topicsToTypedHandlers, handler, serviceId);
+        doRemoveEventHandler(topicsToTypedHandlers, knownTypedHandlers, handler, serviceId);
 
         synchronized (lock) {
             typedHandlersToTargetClasses.remove(handler);
@@ -196,7 +208,7 @@ public class TypedEventBusImpl implements TypedEventBus {
 
         Long serviceId = getServiceId(properties);
 
-        doRemoveEventHandler(topicsToUntypedHandlers, handler, serviceId);
+        doRemoveEventHandler(topicsToUntypedHandlers, knownUntypedHandlers, handler, serviceId);
     }
 
     private Long getServiceId(Map<String, Object> properties) {
@@ -221,9 +233,11 @@ public class TypedEventBusImpl implements TypedEventBus {
         }
     }
 
-    private <T, U> void doRemoveEventHandler(Map<String, Map<T, U>> map, T handler, Long serviceId) {
+    private <T, U> void doRemoveEventHandler(Map<String, Map<T, U>> map, Map<Long, T> idMap, 
+            T handler, Long serviceId) {
         synchronized (lock) {
             List<String> consumed = knownHandlers.remove(serviceId);
+            knownHandlers.remove(serviceId);
             if (consumed != null) {
                 consumed.forEach(s -> {
                     Map<T, ?> handlers = map.get(s);
@@ -238,23 +252,30 @@ public class TypedEventBusImpl implements TypedEventBus {
         }
     }
 
-    void updatedTypedEventHandler(TypedEventHandler<?> handler, Map<String, Object> properties) {
-        // TODO try to extract topic name reflectively
-        String defaultTopic = null;
-        doUpdatedEventHandler(topicsToTypedHandlers, handler, defaultTopic, properties);
+    void updatedTypedEventHandler(Map<String, Object> properties) {
+        Long serviceId = getServiceId(properties);
+        TypedEventHandler<?> handler;
+        synchronized (lock) {
+            handler = knownTypedHandlers.get(serviceId);
+        }
+        Class<?> clazz = discoverTypeForTypedHandler(handler, properties);
+        
+        String defaultTopic = clazz.getName().replace(".", "/");
+        doUpdatedEventHandler(topicsToTypedHandlers, knownTypedHandlers, defaultTopic, properties);
     }
 
-    void updatedUntypedEventHandler(UntypedEventHandler handler, Map<String, Object> properties) {
-        doUpdatedEventHandler(topicsToUntypedHandlers, handler, null, properties);
+    void updatedUntypedEventHandler(Map<String, Object> properties) {
+        doUpdatedEventHandler(topicsToUntypedHandlers, knownUntypedHandlers, null, properties);
     }
 
-    private <T> void doUpdatedEventHandler(Map<String, Map<T, Filter>> map, T handler, String defaultTopic,
+    private <T> void doUpdatedEventHandler(Map<String, Map<T, Filter>> map, Map<Long,T> idToHandler, String defaultTopic,
             Map<String, Object> properties) {
         Long serviceId = getServiceId(properties);
 
         synchronized (lock) {
-            doRemoveEventHandler(map, handler, serviceId);
-            doAddEventHandler(map, handler, defaultTopic, properties);
+            T handler = idToHandler.get(serviceId);
+            doRemoveEventHandler(map, idToHandler, handler, serviceId);
+            doAddEventHandler(map, idToHandler, handler, defaultTopic, properties);
         }
     }
 
